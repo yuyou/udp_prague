@@ -5,6 +5,7 @@ SRC=prague_cc.cpp
 HEADERS=prague_cc.h
 CPPFLAGS=-std=c++11 -O3
 WARN=-Wall -Wextra
+LDFLAGS = -shared -o libprague.so
 
 ifeq ($(OS),Windows_NT)
 	CPP=g++
@@ -20,7 +21,12 @@ else
 endif
 AR=ar
 
-all: udp_prague_receiver udp_prague_sender
+all: udp_prague_receiver udp_prague_sender libprague.so
+
+# Target: Build the library
+libprague.so: lib_prague
+	$(CPP) $(LDFLAGS) libprague.o
+	
 
 lib_prague: $(SRC) $(HEADERS) Makefile
 	$(CPP) $(CPPFLAGS) $(WARN) -c $(SRC) -o libprague.o
