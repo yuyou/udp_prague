@@ -3,7 +3,7 @@
 
 SRC=prague_cc.cpp
 HEADERS=prague_cc.h
-CPPFLAGS=-std=c++11 -O3
+CPPFLAGS=-std=c++11 -O3 -c -fPIC
 WARN=-Wall -Wextra
 LDFLAGS = -shared -o libprague.so
 
@@ -24,10 +24,15 @@ AR=ar
 all: udp_prague_receiver udp_prague_sender libprague.so
 
 # Target: Build the library
-libprague.so: lib_prague
-	$(CPP) $(LDFLAGS) libprague.o
-	
+libprague.so: prague_wrapper.o
+	$(CXX) $(LDFLAGS) prague_wrapper.o
 
+prague_wrapper.o: prague_wrapper.c
+	$(CXX) $(CPPFLAGS) prague_wrapper.c
+
+# libprague.so: lib_prague
+# 	$(CPP) $(LDFLAGS) libprague.o
+	
 lib_prague: $(SRC) $(HEADERS) Makefile
 	$(CPP) $(CPPFLAGS) $(WARN) -c $(SRC) -o libprague.o
 	$(AR) rcs libprague.a libprague.o
