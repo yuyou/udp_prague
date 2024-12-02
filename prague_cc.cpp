@@ -81,15 +81,17 @@ const time_tp REF_RTT = 25000;             // 25ms
 const uint8_t PROB_SHIFT = 20;             // enough as max value that can control up to 100Gbps with r [Mbps] = 1/p - 1, p = 1/(r + 1) = 1/100001
 const prob_tp MAX_PROB = 1 << PROB_SHIFT;  // with r [Mbps] = 1/p - 1 = 2^20 Mbps = 1Tbps
 const uint8_t ALPHA_SHIFT = 4;             // >> 4 is divide by 16
+const count_tp MIN_PKT_BURST = 1;          // 1 packet
+const count_tp MIN_PKT_WIN = 2;            // 2 packets
 
 PragueCC::PragueCC(
-    size_tp max_packet_size,   // use MTU detection, or a low enough value. Can be updated on the fly (todo)
-    fps_tp fps,                // only used for video; frames per second, 0 must be used for bulk transfer
-    time_tp frame_budget,      // only used for video; over what time [µs] you want to pace the frame (max 1000000/fps [µs])
-    rate_tp init_rate,         // 12500 Byte/s (equiv. 100kbps)
-    count_tp init_window,      // 10 packets
-    rate_tp min_rate,          // 12500 Byte/s (equiv. 100kbps)
-    rate_tp max_rate)          // 12500000000 Byte/s (equiv. 100Gbps)
+    size_tp max_packet_size,
+    fps_tp fps,
+    time_tp frame_budget,
+    rate_tp init_rate,
+    count_tp init_window,
+    rate_tp min_rate,
+    rate_tp max_rate)
 {
     m_start_ref = 0;
     time_tp ts_now = Now();
@@ -147,18 +149,18 @@ PragueCC::PragueCC(
     m_alpha = 0;
     m_pacing_rate = init_rate;
     m_fractional_window = m_init_window;
-    m_packet_size = m_pacing_rate * REF_RTT / 1000000 / 2;            // B/p = B/s * 25ms/burst / 2p/burst
-    if (m_packet_size < 150)
-        m_packet_size = 150;
+    m_packet_size = m_pacing_rate * REF_RTT / 1000000 / MIN_PKT_WIN;            // B/p = B/s * 25ms/burst / 2p/window
+    if (m_packet_size < PRAGUE_MINMTU)
+        m_packet_size = PRAGUE_MINMTU;
     if (m_packet_size > m_max_packet_size)
         m_packet_size = m_max_packet_size;
     m_packet_burst = count_tp(m_pacing_rate * BURST_TIME / 1000000 / m_packet_size);  // p = B/s * 250µs / B/p
-    if (m_packet_burst < 1) {
-        m_packet_burst = 1;
+    if (m_packet_burst < MIN_PKT_BURST) {
+        m_packet_burst = MIN_PKT_BURST;
     }
     m_packet_window = count_tp((m_fractional_window / 1000000 + m_packet_size - 1) / m_packet_size);
-    if (m_packet_window < 2) {
-        m_packet_window = 2;
+    if (m_packet_window < MIN_PKT_WIN) {
+        m_packet_window = MIN_PKT_WIN;
     }
 }
 
@@ -213,13 +215,23 @@ bool PragueCC::ACKReceived(    // call this when an ACK (or a Frame ACK) is rece
     if ((m_packets_received - packets_received > 0) || (m_packets_CE - packets_CE > 0)) // this is an older or invalid ACK (these counters can't go down)
         return false;
 
-    //time_tp pacing_interval = m_packet_size * 1000000 / m_pacing_rate; // calculate the max expected rtt from pacing
+    time_tp pacing_interval = m_packet_size * 1000000 / m_pacing_rate; // calculate the max expected rtt from pacing
     //printf("FrW: %ld, SRTT: %d, Pacing interval: %ld, packet_size: %ld, packet_burst: %d, pacing_rate: %ld\n", m_fractional_window, m_srtt, m_packet_size * 1000000 * m_packet_burst / m_pacing_rate, m_packet_size, m_packet_burst, m_pacing_rate);
     time_tp srtt = (m_srtt);// > pacing_interval) ? m_srtt : pacing_interval; // take into account the pacing delay
     if (m_cc_state == cs_init)  // initialize the window with the initial pacing rate
     {
         m_fractional_window = srtt * m_pacing_rate;
         m_cc_state = cs_cong_avoid;
+    }
+    if ((srtt <= 2000) || (srtt <= pacing_interval)) {
+        // keep rate stable when large dip in srtt
+        m_cca_mode = cca_prague_rate;
+    }
+    else {
+        // keep rate stable when large jump in srtt
+        if (m_cca_mode == cca_prague_rate)
+            m_fractional_window = srtt * m_pacing_rate;
+        m_cca_mode = cca_prague_win;
     }
     time_tp ts = Now();
     // Update alpha if both a window and a virtual rtt are passed
@@ -310,7 +322,7 @@ bool PragueCC::ACKReceived(    // call this when an ACK (or a Frame ACK) is rece
             //printf("time: %d, K: %u, offs: %lu, delta: %lu/%lu, pkt: %lu, rtt_min: %d, RTT_SCALED: %lu, count: %lu, target: %lu, fw: %lu\n", t, m_cubic_K, offs, (C_SCALED * offs * offs * offs) * m_packet_size, delta, m_packet_size, m_rtt_min, RTT_SCALED, count, target, m_fractional_window);
             m_fractional_window += acks * m_max_packet_size * srtt * 1000000 / m_vrtt * srtt / m_vrtt * count / m_fractional_window;
         } else {
-            m_pacing_rate += acks * m_packet_size * 1000000 / m_vrtt * m_max_packet_size / m_vrtt * 1000000 / m_pacing_rate;
+            m_pacing_rate += acks * m_max_packet_size * 1000000 / m_vrtt * m_packet_size / m_vrtt * 1000000 / m_pacing_rate;
         }
     }
 
@@ -341,22 +353,25 @@ bool PragueCC::ACKReceived(    // call this when an ACK (or a Frame ACK) is rece
         m_pacing_rate = m_max_rate;
     m_fractional_window = m_pacing_rate * srtt;  // in uB
 
+    if (m_fractional_window == 0)
+        m_fractional_window = 1;
+
     size_tp old_packet_size = m_packet_size;
-    m_packet_size = m_pacing_rate * m_vrtt / 1000000 / 2;            // B/p = B/s * 25ms/burst / 2p/burst
-    if (m_packet_size < 150)
-        m_packet_size = 150;
+    m_packet_size = m_pacing_rate * m_vrtt / 1000000 / MIN_PKT_WIN;            // B/p = B/s * 25ms/burst / 2p/burst
+    if (m_packet_size < PRAGUE_MINMTU)
+        m_packet_size = PRAGUE_MINMTU;
     if (m_packet_size > m_max_packet_size)
         m_packet_size = m_max_packet_size;
     if (m_packet_size != old_packet_size) {
         m_cubic_K = m_cubic_K * CubicRoot(old_packet_size) / CubicRoot(m_packet_size);
     }
-    m_packet_burst = count_tp(m_pacing_rate * 250 / 1000000 / m_packet_size);  // p = B/s * 250µs / B/p
-    if (m_packet_burst < 1) {
-        m_packet_burst = 1;
+    m_packet_burst = count_tp(m_pacing_rate * BURST_TIME / 1000000 / m_packet_size);  // p = B/s * 250µs / B/p
+    if (m_packet_burst < MIN_PKT_BURST) {
+        m_packet_burst = MIN_PKT_BURST;
     }
     m_packet_window = count_tp((m_fractional_window/1000000 + m_packet_size -1)/m_packet_size);
-    if (m_packet_window < 2) {
-        m_packet_window = 2;
+    if (m_packet_window < MIN_PKT_WIN) {
+        m_packet_window = MIN_PKT_WIN;
     }
 
     m_cc_ts = ts;
@@ -376,7 +391,7 @@ bool PragueCC::ACKReceived(    // call this when an ACK (or a Frame ACK) is rece
     count_tp packets_lost,         // echoed lost counter
     bool error_L4S)                // receiver found a bleached/error ECN; stop using L4S_id on the sending packets!
 {
-    
+
     return true;
 }*/
 
@@ -427,9 +442,9 @@ void PragueCC::ResetCCInfo()     // call this when there is a RTO detected
     m_alpha = 0;
     m_pacing_rate = m_init_rate;
     m_fractional_window = m_max_packet_size*1000000; // reset to 1 packet
-    m_packet_burst = 1;
+    m_packet_burst = MIN_PKT_BURST;
     m_packet_size = m_max_packet_size;
-    m_packet_window = 1;
+    m_packet_window = MIN_PKT_WIN;
 }
 
 void PragueCC::GetTimeInfo(          // when the any-app needs to send a packet
