@@ -25,13 +25,10 @@ all: udp_prague_receiver udp_prague_sender libprague.so
 
 # Target: Build the library
 libprague.so: prague_wrapper.o
-	$(CXX) $(LDFLAGS) prague_wrapper.o
+	$(CPP) $(LDFLAGS) prague_wrapper.o
 
 prague_wrapper.o: prague_wrapper.c
-	$(CXX) $(CPPFLAGS) prague_wrapper.c
-
-# libprague.so: lib_prague
-# 	$(CPP) $(LDFLAGS) libprague.o
+	$(CPP) $(CPPFLAGS) prague_wrapper.c
 	
 lib_prague: $(SRC) $(HEADERS) Makefile
 	$(CPP) $(CPPFLAGS) $(WARN) -c $(SRC) -o libprague.o

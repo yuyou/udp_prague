@@ -6,6 +6,7 @@
 //
 
 #include <string>
+
 #include "prague_cc.h"
 
 // to avoid int64 printf incompatibility between platforms:
@@ -17,8 +18,9 @@ rate_tp bit_atoi_byte(const char *inString)
     double theNum;
     char suffix = '\0';
     // scan the number and any suffices
-    sscanf_s(inString, "%lf%c", &theNum, &suffix, sizeof(suffix));
-
+    // sscanf_s(inString, "%lf%c", &theNum, &suffix, sizeof(suffix));
+    sscanf(inString, "%lf%c", &theNum, &suffix);
+    
     /* convert according to [Gg Mm Kk] */
     switch (suffix) {
     case 'G':
